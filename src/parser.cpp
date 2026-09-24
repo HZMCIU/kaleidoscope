@@ -1,6 +1,7 @@
 #include "parser.h"
 #include "lexer.h"
 
+#include <llvm/IR/Function.h>
 #include <map>
 #include <memory>
 
@@ -16,6 +17,11 @@ static std::unique_ptr<ExprAST> LogError(const char *Str) {
 }
 
 static std::unique_ptr<PrototypeAST> LogErrorP(const char *Str) {
+  LogError(Str);
+  return nullptr;
+}
+
+llvm::Value *LogErrorV(const char *Str) {
   LogError(Str);
   return nullptr;
 }
@@ -82,7 +88,7 @@ static std::unique_ptr<ExprAST> ParseIdentifierExpr() {
 static std::unique_ptr<ExprAST> ParsePrimary() {
   switch (CurTok) {
   default:
-    // printf("%c\n", CurTok);
+    printf("%c\n", CurTok);
     return LogError("unknown token when expecting an expression");
   case tok_identifier:
     return ParseIdentifierExpr();
@@ -206,26 +212,39 @@ static std::unique_ptr<FunctionAST> ParseTopLevelExpr() {
 }
 
 static void HandleDefinition() {
-  if (ParseDefinition()) {
-    fprintf(stderr, "Parsed a function definition\n");
-  } else {
-    getNextToken();
+  if (auto FnAST = ParseDefinition()) {
+    if (auto *FnIR = FnAST->codegen()) {
+      fprintf(stderr, "Read function definition: \n");
+      FnIR->print(llvm::errs());
+      fprintf(stderr, "\n");
+    } else {
+      getNextToken();
+    }
   }
 }
 
 static void HandleExtern() {
-  if (ParseExtern()) {
-    fprintf(stderr, "Parsed an extern\n");
-  } else {
-    getNextToken();
+  if (auto ProtoAST = ParseExtern()) {
+    if (auto *FnIR = ProtoAST->codegen()) {
+      fprintf(stderr, "Read extern: \n");
+      FnIR->print(llvm::errs());
+      fprintf(stderr, "\n");
+    } else {
+      getNextToken();
+    }
   }
 }
 
 static void HandleTopLevelExpression() {
-  if (ParseTopLevelExpr()) {
-    fprintf(stderr, "Parsed a top-level expr\n");
-  } else {
-    getNextToken();
+  if (auto FnAST = ParseTopLevelExpr()) {
+    if (auto *FnIR = FnAST->codegen()) {
+      fprintf(stderr, "Read top-level expression: \n");
+      FnIR->print(llvm::errs());
+      fprintf(stderr, "\n");
+      FnIR->eraseFromParent();
+    } else {
+      getNextToken();
+    }
   }
 }
 
@@ -243,6 +262,7 @@ void MainLoop() {
       break;
     case tok_extern:
       HandleExtern();
+      break;
     default:
       HandleTopLevelExpression();
       break;

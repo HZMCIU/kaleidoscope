@@ -1,3 +1,17 @@
+#ifndef FILE_PARSER_H
+#define FILE_PARSER_H
+
+#include <llvm/ADT/APFloat.h>
+#include <llvm/IR/BasicBlock.h>
+#include <llvm/IR/DerivedTypes.h>
+#include <llvm/IR/Function.h>
+#include <llvm/IR/IRBuilder.h>
+#include <llvm/IR/LLVMContext.h>
+#include <llvm/IR/Module.h>
+#include <llvm/IR/Type.h>
+#include <llvm/IR/Value.h>
+#include <llvm/IR/Verifier.h>
+#include <map>
 #include <memory>
 #include <string>
 #include <vector>
@@ -5,11 +19,13 @@
 class ExprAST {
 public:
   virtual ~ExprAST() = default;
+  virtual llvm::Value *codegen() = 0;
 };
 
 class NumberExprAST : public ExprAST {
 public:
   NumberExprAST(double Val) : Val(Val) {};
+  llvm::Value *codegen() override;
 
 private:
   double Val;
@@ -20,6 +36,7 @@ class VariableExprAST : public ExprAST {
 
 public:
   VariableExprAST(const std::string &Name) : Name(Name) {}
+  llvm::Value *codegen() override;
 };
 
 class BinaryExprAST : public ExprAST {
@@ -30,6 +47,7 @@ public:
   BinaryExprAST(char Op, std::unique_ptr<ExprAST> LHS,
                 std::unique_ptr<ExprAST> RHS)
       : Op(Op), LHS(std::move(LHS)), RHS(std::move(RHS)) {}
+  llvm::Value *codegen() override;
 };
 
 class CallExprAST : public ExprAST {
@@ -39,6 +57,7 @@ class CallExprAST : public ExprAST {
 public:
   CallExprAST(std::string &Callee, std::vector<std::unique_ptr<ExprAST>> Args)
       : Callee(Callee), Args(std::move(Args)) {}
+  llvm::Value *codegen() override;
 };
 
 class PrototypeAST {
@@ -50,9 +69,11 @@ public:
       : Name(Name), Args(std::move(Args)) {}
 
   const std::string &getName() const { return Name; }
+  llvm::Function *codegen();
 };
 
 class FunctionAST {
+public:
   std::unique_ptr<PrototypeAST> Proto;
   std::unique_ptr<ExprAST> Body;
 
@@ -60,13 +81,12 @@ public:
   FunctionAST(std::unique_ptr<PrototypeAST> Proto,
               std::unique_ptr<ExprAST> Body)
       : Proto(std::move(Proto)), Body(std::move(Body)) {}
+
+  llvm::Function *codegen();
 };
 
-// std::unique_ptr<ExprAST> LogError(const char *Str);
-// std::unique_ptr<PrototypeAST> LogErrorP(const char *Str);
-// std::unique_ptr<ExprAST> ParseNumberExpr();
-// std::unique_ptr<ExprAST> ParseParenExpr();
-// std::unique_ptr<ExprAST> ParseIdentifierExpr();
-// std::unique_ptr<ExprAST> ParsePrimary();
 void MainLoop();
 int getNextToken();
+llvm::Value *LogErrorV(const char *Str);
+void InitializeModule();
+#endif
