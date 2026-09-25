@@ -209,6 +209,70 @@ llvm::Value *IfExprAST::codegen() {
   return PN;
 }
 
+llvm::Value *ForExprAST::codegen() {
+  llvm::Value *StartVal = Start->codegen();
+  if (!StartVal) {
+    return nullptr;
+  }
+
+  llvm::Function *TheFunction = Builder->GetInsertBlock()->getParent();
+  llvm::BasicBlock *PreheaderBB = Builder->GetInsertBlock();
+  llvm::BasicBlock *LoopBB =
+      llvm::BasicBlock::Create(*TheContext, "loop", TheFunction);
+
+  Builder->CreateBr(LoopBB);
+
+  Builder->SetInsertPoint(LoopBB);
+
+  llvm::PHINode *Variable =
+      Builder->CreatePHI(llvm::Type::getDoubleTy(*TheContext), 2, VarName);
+  Variable->addIncoming(StartVal, PreheaderBB);
+
+  llvm::Value *OldVal = NamedValues[VarName];
+  NamedValues[VarName] = Variable;
+
+  if (!Body->codegen()) {
+    return nullptr;
+  }
+
+  llvm::Value *StepVal = nullptr;
+  if (Step) {
+    StepVal = Step->codegen();
+    if (!StepVal) {
+      return nullptr;
+    }
+  } else {
+    StepVal = llvm::ConstantFP::get(*TheContext, llvm::APFloat(1.0));
+  }
+
+  llvm::Value *NextVar = Builder->CreateFAdd(Variable, StepVal, "nextvar");
+
+  llvm::Value *EndCond = End->codegen();
+  if (!EndCond) {
+    return nullptr;
+  }
+
+  EndCond = Builder->CreateFCmpONE(
+      EndCond, llvm::ConstantFP::get(*TheContext, llvm::APFloat(0.0)),
+      "loopcond");
+
+  llvm::BasicBlock *LoopEndBB = Builder->GetInsertBlock();
+  llvm::BasicBlock *AfterBB =
+      llvm::BasicBlock::Create(*TheContext, "afterloop", TheFunction);
+  Builder->CreateCondBr(EndCond, LoopBB, AfterBB);
+  Builder->SetInsertPoint(AfterBB);
+
+  Variable->addIncoming(NextVar, LoopEndBB);
+
+  if (OldVal) {
+    NamedValues[VarName] = OldVal;
+  } else {
+    NamedValues.erase(VarName);
+  }
+
+  return llvm::Constant::getNullValue(llvm::Type::getDoubleTy(*TheContext));
+}
+
 void InitializeModule() {
   TheContext = std::make_unique<llvm::LLVMContext>();
   TheModule = std::make_unique<llvm::Module>("my cool jit", *TheContext);
