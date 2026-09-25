@@ -61,9 +61,9 @@ llvm::Value *BinaryExprAST::codegen() {
 
   switch (Op) {
   case '+':
-    return Builder->CreateAdd(L, R, "addtmp");
+    return Builder->CreateFAdd(L, R, "addtmp");
   case '-':
-    return Builder->CreateSub(L, R, "subtmp");
+    return Builder->CreateFSub(L, R, "subtmp");
   case '*':
     return Builder->CreateFMul(L, R, "multmp");
   case '<':
