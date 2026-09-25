@@ -20,6 +20,9 @@ llvm::ExitOnError ExitOnErr;
 int CurTok;
 int getNextToken() { return CurTok = gettok(); }
 
+static std::unique_ptr<ExprAST> ParseIfExpr();
+static std::unique_ptr<ExprAST> ParseExpression();
+
 static std::unique_ptr<ExprAST> LogError(const char *Str) {
   fprintf(stderr, "Error: %s\n", Str);
   return nullptr;
@@ -40,8 +43,6 @@ static std::unique_ptr<ExprAST> ParseNumberExpr() {
   getNextToken();
   return std::move(Result);
 }
-
-static std::unique_ptr<ExprAST> ParseExpression();
 
 static std::unique_ptr<ExprAST> ParseParenExpr() {
   getNextToken();
@@ -105,6 +106,8 @@ static std::unique_ptr<ExprAST> ParsePrimary() {
     return ParseNumberExpr();
   case '(':
     return ParseParenExpr();
+  case tok_if:
+    return ParseIfExpr();
   }
 }
 
@@ -218,6 +221,35 @@ static std::unique_ptr<FunctionAST> ParseTopLevelExpr() {
   }
 
   return nullptr;
+}
+
+static std::unique_ptr<ExprAST> ParseIfExpr() {
+  getNextToken();
+  auto Cond = ParseExpression();
+  if (!Cond) {
+    return nullptr;
+  }
+
+  if (CurTok != tok_then) {
+    return LogError("expected then");
+  }
+  getNextToken();
+  auto Then = ParseExpression();
+  if (!Then) {
+    return nullptr;
+  }
+
+  if (CurTok != tok_else) {
+    return LogError("expected else");
+  }
+  getNextToken();
+  auto Else = ParseExpression();
+  if (!Else) {
+    return nullptr;
+  }
+
+  return std::make_unique<IfExprAST>(std::move(Cond), std::move(Then),
+                                     std::move(Else));
 }
 
 static void HandleDefinition() {

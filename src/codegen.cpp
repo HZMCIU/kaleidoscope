@@ -3,8 +3,10 @@
 #include <llvm/ADT/APFloat.h>
 #include <llvm/Analysis/CGSCCPassManager.h>
 #include <llvm/IR/BasicBlock.h>
+#include <llvm/IR/Constants.h>
 #include <llvm/IR/DerivedTypes.h>
 #include <llvm/IR/Function.h>
+#include <llvm/IR/Instructions.h>
 #include <llvm/IR/Module.h>
 #include <llvm/IR/PassInstrumentation.h>
 #include <llvm/IR/PassManager.h>
@@ -160,6 +162,51 @@ llvm::Function *FunctionAST::codegen() {
 
   TheFunction->eraseFromParent();
   return nullptr;
+}
+
+llvm::Value *IfExprAST::codegen() {
+  llvm::Value *ConV = Cond->codegen();
+  if (!ConV) {
+    return nullptr;
+  }
+
+  ConV = Builder->CreateFCmpONE(
+      ConV, llvm::ConstantFP::get(*TheContext, llvm::APFloat(0.0)), "ifcond");
+
+  llvm::Function *TheFunction = Builder->GetInsertBlock()->getParent();
+  llvm::BasicBlock *ThenBB =
+      llvm::BasicBlock::Create(*TheContext, "then", TheFunction);
+  llvm::BasicBlock *ElseBB = llvm::BasicBlock::Create(*TheContext, "else");
+  llvm::BasicBlock *MergeBB = llvm::BasicBlock::Create(*TheContext, "ifcont");
+
+  Builder->CreateCondBr(ConV, ThenBB, ElseBB);
+
+  Builder->SetInsertPoint(ThenBB);
+  llvm::Value *ThenV = Then->codegen();
+  if (!ThenV) {
+    return nullptr;
+  }
+  Builder->CreateBr(MergeBB);
+  ThenBB = Builder->GetInsertBlock();
+
+  TheFunction->insert(TheFunction->end(), ElseBB);
+  Builder->SetInsertPoint(ElseBB);
+  llvm::Value *ElseV = Else->codegen();
+  if (!ElseV) {
+    return nullptr;
+  }
+  Builder->CreateBr(MergeBB);
+  ElseBB = Builder->GetInsertBlock();
+
+  TheFunction->insert(TheFunction->end(), MergeBB);
+  Builder->SetInsertPoint(MergeBB);
+  llvm::PHINode *PN =
+      Builder->CreatePHI(llvm::Type::getDoubleTy(*TheContext), 2, "iftmp");
+
+  PN->addIncoming(ThenV, ThenBB);
+  PN->addIncoming(ElseV, ElseBB);
+
+  return PN;
 }
 
 void InitializeModule() {
