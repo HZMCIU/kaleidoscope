@@ -1,12 +1,21 @@
 #include "parser.h"
+#include "KaleidoscopeJIT.h"
 #include "lexer.h"
 
+#include <llvm/ExecutionEngine/Orc/ThreadSafeModule.h>
 #include <llvm/IR/Function.h>
+#include <llvm/Support/TargetSelect.h>
+#include <llvm/Target/TargetMachine.h>
 #include <map>
 #include <memory>
 
 extern double NumVal;
 extern std::string IdentifierStr;
+extern std::unique_ptr<llvm::orc::KaleidoscopeJIT> TheJIT;
+extern std::unique_ptr<llvm::LLVMContext> TheContext;
+extern std::unique_ptr<llvm::Module> TheModule;
+extern std::map<std::string, std::unique_ptr<PrototypeAST>> FunctionProtos;
+llvm::ExitOnError ExitOnErr;
 
 int CurTok;
 int getNextToken() { return CurTok = gettok(); }
@@ -217,6 +226,10 @@ static void HandleDefinition() {
       fprintf(stderr, "Read function definition: \n");
       FnIR->print(llvm::errs());
       fprintf(stderr, "\n");
+
+      ExitOnErr(TheJIT->addModule(llvm::orc::ThreadSafeModule(
+          std::move(TheModule), std::move(TheContext))));
+      InitializeModuleAndManagers();
     } else {
       getNextToken();
     }
@@ -229,6 +242,8 @@ static void HandleExtern() {
       fprintf(stderr, "Read extern: \n");
       FnIR->print(llvm::errs());
       fprintf(stderr, "\n");
+
+      FunctionProtos[ProtoAST->getName()] = std::move(ProtoAST);
     } else {
       getNextToken();
     }
@@ -237,11 +252,30 @@ static void HandleExtern() {
 
 static void HandleTopLevelExpression() {
   if (auto FnAST = ParseTopLevelExpr()) {
+    // if (auto *FnIR = FnAST->codegen()) {
+    //   fprintf(stderr, "Read top-level expression: \n");
+    //   FnIR->print(llvm::errs());
+    //   fprintf(stderr, "\n");
+    //   FnIR->eraseFromParent();
     if (auto *FnIR = FnAST->codegen()) {
-      fprintf(stderr, "Read top-level expression: \n");
+
       FnIR->print(llvm::errs());
       fprintf(stderr, "\n");
-      FnIR->eraseFromParent();
+
+      auto RT = TheJIT->getMainJITDylib().createResourceTracker();
+
+      auto TSM = llvm::orc::ThreadSafeModule(std::move(TheModule),
+                                             std::move(TheContext));
+
+      ExitOnErr(TheJIT->addModule(std::move(TSM), RT));
+      InitializeModuleAndManagers();
+
+      auto ExprSymbol = ExitOnErr(TheJIT->lookup("__anon_expr"));
+
+      double (*FP)() = ExprSymbol.toPtr<double (*)()>();
+      fprintf(stderr, "Evaluated to %f\n", FP());
+
+      ExitOnErr(RT->remove());
     } else {
       getNextToken();
     }

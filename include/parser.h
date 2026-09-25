@@ -89,4 +89,5 @@ void MainLoop();
 int getNextToken();
 llvm::Value *LogErrorV(const char *Str);
 void InitializeModule();
+void InitializeModuleAndManagers();
 #endif
