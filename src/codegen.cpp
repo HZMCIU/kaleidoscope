@@ -1,5 +1,6 @@
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/LLVMContext.h"
+#include <cassert>
 #include <llvm/ADT/APFloat.h>
 #include <llvm/Analysis/CGSCCPassManager.h>
 #include <llvm/IR/BasicBlock.h>
@@ -39,6 +40,10 @@ std::unique_ptr<llvm::StandardInstrumentations> TheSI;
 std::unique_ptr<llvm::orc::KaleidoscopeJIT> TheJIT;
 std::map<std::string, std::unique_ptr<PrototypeAST>> FunctionProtos;
 
+extern std::map<char, int> BinopPrecedence;
+
+llvm::Function *getFunction(std::string Name);
+
 llvm::Value *NumberExprAST::codegen() {
   return llvm::ConstantFP::get(*TheContext, llvm::APFloat(Val));
 }
@@ -73,8 +78,15 @@ llvm::Value *BinaryExprAST::codegen() {
     return Builder->CreateUIToFP(L, llvm::Type::getDoubleTy(*TheContext),
                                  "booltmp");
   default:
-    return LogErrorV("invalid binary operator");
+    break;
+    // return LogErrorV("invalid binary operator");
   }
+
+  llvm::Function *F = getFunction(std::string("binary") + Op);
+  assert(F && "binary operator not found!");
+
+  llvm::Value *Ops[2] = {L, R};
+  return Builder->CreateCall(F, Ops, "binop");
 }
 
 llvm::Function *getFunction(std::string Name) {
@@ -132,13 +144,16 @@ llvm::Function *PrototypeAST::codegen() {
 }
 
 llvm::Function *FunctionAST::codegen() {
-  // llvm::Function *TheFunction = TheModule->getFunction(Proto->getName());
   auto &P = *Proto;
   FunctionProtos[Proto->getName()] = std::move(Proto);
   llvm::Function *TheFunction = getFunction(P.getName());
 
   if (!TheFunction) {
     return nullptr;
+  }
+
+  if (P.isBinaryOp()) {
+    BinopPrecedence[P.getOperatorName()] = P.getBinaryPrecedence();
   }
 
   llvm::BasicBlock *BB =
@@ -271,6 +286,20 @@ llvm::Value *ForExprAST::codegen() {
   }
 
   return llvm::Constant::getNullValue(llvm::Type::getDoubleTy(*TheContext));
+}
+
+llvm::Value *UnaryExprAST::codegen() {
+  llvm::Value *OperandV = Operand->codegen();
+  if (!OperandV) {
+    return nullptr;
+  }
+
+  llvm::Function *F = getFunction(std::string("unary") + Opcode);
+  if (!F) {
+    return LogErrorV("Unknow unary operator");
+  }
+
+  return Builder->CreateCall(F, OperandV, "unop");
 }
 
 void InitializeModule() {

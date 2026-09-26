@@ -63,13 +63,27 @@ public:
 class PrototypeAST {
   std::string Name;
   std::vector<std::string> Args;
+  bool IsOperator;
+  unsigned Precedence;
 
 public:
-  PrototypeAST(const std::string &Name, std::vector<std::string> Args)
-      : Name(Name), Args(std::move(Args)) {}
+  PrototypeAST(const std::string &Name, std::vector<std::string> Args,
+               bool IsOperator = false, unsigned Prec = 0)
+      : Name(Name), Args(std::move(Args)), IsOperator(IsOperator),
+        Precedence(Prec) {}
 
   const std::string &getName() const { return Name; }
   llvm::Function *codegen();
+
+  bool isUnaryOp() const { return IsOperator && Args.size() == 1; }
+  bool isBinaryOp() const { return IsOperator && Args.size() == 2; }
+
+  char getOperatorName() const {
+    assert(isUnaryOp() || isBinaryOp());
+    return Name[Name.size() - 1];
+  }
+
+  unsigned getBinaryPrecedence() const { return Precedence; }
 };
 
 class FunctionAST {
@@ -105,6 +119,16 @@ public:
              std::unique_ptr<ExprAST> Body)
       : VarName(VarName), Start(std::move(Start)), End(std::move(End)),
         Body(std::move(Body)) {}
+  llvm::Value *codegen() override;
+};
+
+class UnaryExprAST : public ExprAST {
+  char Opcode;
+  std::unique_ptr<ExprAST> Operand;
+
+public:
+  UnaryExprAST(char Opcode, std::unique_ptr<ExprAST> Operand)
+      : Opcode(Opcode), Operand(std::move(Operand)) {}
   llvm::Value *codegen() override;
 };
 
