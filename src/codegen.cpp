@@ -263,10 +263,17 @@ llvm::Value *IfExprAST::codegen() {
 llvm::Value *ForExprAST::codegen() {
 
   llvm::Function *TheFunction = Builder->GetInsertBlock()->getParent();
-  llvm::BasicBlock *PreheaderBB = Builder->GetInsertBlock();
+
+  llvm::AllocaInst *Alloca = CreateEntryBlockAlloca(TheFunction, VarName);
+
+  llvm::Value *StartVal = Start->codegen();
+  if (!StartVal) {
+    return nullptr;
+  }
+  Builder->CreateStore(StartVal, Alloca);
+  // llvm::BasicBlock *PreheaderBB = Builder->GetInsertBlock();
   llvm::BasicBlock *LoopBB =
       llvm::BasicBlock::Create(*TheContext, "loop", TheFunction);
-  llvm::AllocaInst *Alloca = CreateEntryBlockAlloca(TheFunction, VarName);
 
   Builder->CreateBr(LoopBB);
 
@@ -276,14 +283,9 @@ llvm::Value *ForExprAST::codegen() {
   //     Builder->CreatePHI(llvm::Type::getDoubleTy(*TheContext), 2, VarName);
   // Variable->addIncoming(StartVal, PreheaderBB);
 
-  llvm::Value *OldVal = NamedValues[VarName];
+  llvm::AllocaInst *OldVal = NamedValues[VarName];
+  NamedValues[VarName] = Alloca;
   // NamedValues[VarName] = Variable;
-
-  llvm::Value *StartVal = Start->codegen();
-  if (!StartVal) {
-    return nullptr;
-  }
-  Builder->CreateStore(StartVal, Alloca);
 
   if (!Body->codegen()) {
     return nullptr;
@@ -299,22 +301,22 @@ llvm::Value *ForExprAST::codegen() {
     StepVal = llvm::ConstantFP::get(*TheContext, llvm::APFloat(1.0));
   }
 
+  llvm::Value *EndCond = End->codegen();
+  if (!EndCond) {
+    return nullptr;
+  }
+
   llvm::Value *CurVal =
       Builder->CreateLoad(Alloca->getAllocatedType(), Alloca, VarName.c_str());
   llvm::Value *NextVar = Builder->CreateFAdd(CurVal, StepVal, "nextvar");
   Builder->CreateStore(NextVar, Alloca);
   // llvm::Value *NextVar = Builder->CreateFAdd(Variable, StepVal, "nextvar");
 
-  llvm::Value *EndCond = End->codegen();
-  if (!EndCond) {
-    return nullptr;
-  }
-
   EndCond = Builder->CreateFCmpONE(
       EndCond, llvm::ConstantFP::get(*TheContext, llvm::APFloat(0.0)),
       "loopcond");
 
-  llvm::BasicBlock *LoopEndBB = Builder->GetInsertBlock();
+  // llvm::BasicBlock *LoopEndBB = Builder->GetInsertBlock();
   llvm::BasicBlock *AfterBB =
       llvm::BasicBlock::Create(*TheContext, "afterloop", TheFunction);
   Builder->CreateCondBr(EndCond, LoopBB, AfterBB);
@@ -323,7 +325,7 @@ llvm::Value *ForExprAST::codegen() {
   // Variable->addIncoming(NextVar, LoopEndBB);
 
   if (OldVal) {
-    // NamedValues[VarName] = OldVal;
+    NamedValues[VarName] = OldVal;
   } else {
     NamedValues.erase(VarName);
   }
