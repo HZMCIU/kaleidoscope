@@ -21,6 +21,7 @@
 #include <llvm/Transforms/Scalar/GVN.h>
 #include <llvm/Transforms/Scalar/Reassociate.h>
 #include <llvm/Transforms/Scalar/SimplifyCFG.h>
+#include <llvm/Transforms/Utils/Mem2Reg.h>
 #include <vector>
 
 #include "KaleidoscopeJIT.h"
@@ -29,7 +30,7 @@
 std::unique_ptr<llvm::LLVMContext> TheContext;
 std::unique_ptr<llvm::IRBuilder<>> Builder;
 std::unique_ptr<llvm::Module> TheModule;
-std::map<std::string, llvm::Value *> NamedValues;
+std::map<std::string, llvm::AllocaInst *> NamedValues;
 std::unique_ptr<llvm::FunctionPassManager> TheFPM;
 std::unique_ptr<llvm::LoopAnalysisManager> TheLAM;
 std::unique_ptr<llvm::FunctionAnalysisManager> TheFAM;
@@ -43,19 +44,28 @@ std::map<std::string, std::unique_ptr<PrototypeAST>> FunctionProtos;
 extern std::map<char, int> BinopPrecedence;
 
 llvm::Function *getFunction(std::string Name);
+static llvm::AllocaInst *CreateEntryBlockAlloca(llvm::Function *TheFunction,
+                                                llvm::StringRef VarName) {
+  llvm::IRBuilder<> TmpB(&TheFunction->getEntryBlock(),
+                         TheFunction->getEntryBlock().begin());
+
+  return TmpB.CreateAlloca(llvm::Type::getDoubleTy(*TheContext), nullptr,
+                           VarName);
+}
 
 llvm::Value *NumberExprAST::codegen() {
   return llvm::ConstantFP::get(*TheContext, llvm::APFloat(Val));
 }
 
 llvm::Value *VariableExprAST::codegen() {
-  llvm::Value *V = NamedValues[Name];
+  // llvm::Value *V = NamedValues[Name];
+  llvm::AllocaInst *A = NamedValues[Name];
 
-  if (!V) {
+  if (!A) {
     LogErrorV("Unknown variable name");
   }
 
-  return V;
+  return Builder->CreateLoad(A->getAllocatedType(), A, Name.c_str());
 }
 
 llvm::Value *BinaryExprAST::codegen() {
@@ -77,9 +87,31 @@ llvm::Value *BinaryExprAST::codegen() {
     L = Builder->CreateFCmpULT(L, R, "cmptmp");
     return Builder->CreateUIToFP(L, llvm::Type::getDoubleTy(*TheContext),
                                  "booltmp");
-  default:
-    break;
-    // return LogErrorV("invalid binary operator");
+  case '=':
+    llvm::Value *Val = RHS->codegen();
+    if (!Val) {
+      return nullptr;
+    }
+
+    if (Op == '=') {
+      VariableExprAST *LHSE = static_cast<VariableExprAST *>(LHS.get());
+      if (!LHSE) {
+        return LogErrorV("definition of '=' must be a variable");
+      }
+
+      llvm::Value *Val = RHS->codegen();
+      if (!Val) {
+        return nullptr;
+      }
+
+      llvm::AllocaInst *Alloca = NamedValues[LHSE->getName()];
+      if (!Alloca) {
+        return LogErrorV("Unknown variable name");
+      }
+      Builder->CreateStore(Val, Alloca);
+    }
+
+    return Val;
   }
 
   llvm::Function *F = getFunction(std::string("binary") + Op);
@@ -162,7 +194,11 @@ llvm::Function *FunctionAST::codegen() {
 
   NamedValues.clear();
   for (auto &Arg : TheFunction->args()) {
-    NamedValues[std::string(Arg.getName())] = &Arg;
+    // NamedValues[std::string(Arg.getName())] = &Arg;
+    llvm::AllocaInst *Alloca =
+        CreateEntryBlockAlloca(TheFunction, Arg.getName());
+    Builder->CreateStore(&Arg, Alloca);
+    NamedValues[std::string(Arg.getName())] = Alloca;
   }
 
   if (llvm::Value *RetVal = Body->codegen()) {
@@ -225,26 +261,29 @@ llvm::Value *IfExprAST::codegen() {
 }
 
 llvm::Value *ForExprAST::codegen() {
-  llvm::Value *StartVal = Start->codegen();
-  if (!StartVal) {
-    return nullptr;
-  }
 
   llvm::Function *TheFunction = Builder->GetInsertBlock()->getParent();
   llvm::BasicBlock *PreheaderBB = Builder->GetInsertBlock();
   llvm::BasicBlock *LoopBB =
       llvm::BasicBlock::Create(*TheContext, "loop", TheFunction);
+  llvm::AllocaInst *Alloca = CreateEntryBlockAlloca(TheFunction, VarName);
 
   Builder->CreateBr(LoopBB);
 
   Builder->SetInsertPoint(LoopBB);
 
-  llvm::PHINode *Variable =
-      Builder->CreatePHI(llvm::Type::getDoubleTy(*TheContext), 2, VarName);
-  Variable->addIncoming(StartVal, PreheaderBB);
+  // llvm::PHINode *Variable =
+  //     Builder->CreatePHI(llvm::Type::getDoubleTy(*TheContext), 2, VarName);
+  // Variable->addIncoming(StartVal, PreheaderBB);
 
   llvm::Value *OldVal = NamedValues[VarName];
-  NamedValues[VarName] = Variable;
+  // NamedValues[VarName] = Variable;
+
+  llvm::Value *StartVal = Start->codegen();
+  if (!StartVal) {
+    return nullptr;
+  }
+  Builder->CreateStore(StartVal, Alloca);
 
   if (!Body->codegen()) {
     return nullptr;
@@ -260,7 +299,11 @@ llvm::Value *ForExprAST::codegen() {
     StepVal = llvm::ConstantFP::get(*TheContext, llvm::APFloat(1.0));
   }
 
-  llvm::Value *NextVar = Builder->CreateFAdd(Variable, StepVal, "nextvar");
+  llvm::Value *CurVal =
+      Builder->CreateLoad(Alloca->getAllocatedType(), Alloca, VarName.c_str());
+  llvm::Value *NextVar = Builder->CreateFAdd(CurVal, StepVal, "nextvar");
+  Builder->CreateStore(NextVar, Alloca);
+  // llvm::Value *NextVar = Builder->CreateFAdd(Variable, StepVal, "nextvar");
 
   llvm::Value *EndCond = End->codegen();
   if (!EndCond) {
@@ -277,10 +320,10 @@ llvm::Value *ForExprAST::codegen() {
   Builder->CreateCondBr(EndCond, LoopBB, AfterBB);
   Builder->SetInsertPoint(AfterBB);
 
-  Variable->addIncoming(NextVar, LoopEndBB);
+  // Variable->addIncoming(NextVar, LoopEndBB);
 
   if (OldVal) {
-    NamedValues[VarName] = OldVal;
+    // NamedValues[VarName] = OldVal;
   } else {
     NamedValues.erase(VarName);
   }
@@ -300,6 +343,44 @@ llvm::Value *UnaryExprAST::codegen() {
   }
 
   return Builder->CreateCall(F, OperandV, "unop");
+}
+
+llvm::Value *VarExprAST::codegen() {
+  std::vector<llvm::AllocaInst *> OldBindings;
+
+  llvm::Function *TheFunction = Builder->GetInsertBlock()->getParent();
+
+  for (unsigned i = 0, e = VarNames.size(); i != e; i++) {
+    const std::string &VarName = VarNames[i].first;
+    ExprAST *Init = VarNames[i].second.get();
+
+    llvm::Value *InitVal;
+    if (Init) {
+      InitVal = Init->codegen();
+      if (!InitVal) {
+        return nullptr;
+      }
+    } else {
+      InitVal = llvm::ConstantFP::get(*TheContext, llvm::APFloat(0.0));
+    }
+
+    llvm::AllocaInst *Alloca = CreateEntryBlockAlloca(TheFunction, VarName);
+    Builder->CreateStore(InitVal, Alloca);
+
+    OldBindings.push_back(NamedValues[VarName]);
+
+    NamedValues[VarName] = Alloca;
+  }
+
+  llvm::Value *BodyVal = Body->codegen();
+  if (!BodyVal) {
+    return nullptr;
+  }
+
+  for (unsigned i = 0, e = VarNames.size(); i != e; i++) {
+    NamedValues[VarNames[i].first] = OldBindings[i];
+  }
+  return BodyVal;
 }
 
 void InitializeModule() {
@@ -325,6 +406,7 @@ void InitializeModuleAndManagers() {
 
   TheSI->registerCallbacks(*ThePIC, TheMAM.get());
 
+  TheFPM->addPass(llvm::PromotePass());
   TheFPM->addPass(llvm::InstCombinePass());
   TheFPM->addPass(llvm::ReassociatePass());
   TheFPM->addPass(llvm::GVNPass());

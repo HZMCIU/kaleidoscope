@@ -1,6 +1,7 @@
 #ifndef FILE_PARSER_H
 #define FILE_PARSER_H
 
+#include <deque>
 #include <llvm/ADT/APFloat.h>
 #include <llvm/IR/BasicBlock.h>
 #include <llvm/IR/DerivedTypes.h>
@@ -37,6 +38,7 @@ class VariableExprAST : public ExprAST {
 public:
   VariableExprAST(const std::string &Name) : Name(Name) {}
   llvm::Value *codegen() override;
+  const std::string &getName() const { return Name; }
 };
 
 class BinaryExprAST : public ExprAST {
@@ -129,6 +131,18 @@ class UnaryExprAST : public ExprAST {
 public:
   UnaryExprAST(char Opcode, std::unique_ptr<ExprAST> Operand)
       : Opcode(Opcode), Operand(std::move(Operand)) {}
+  llvm::Value *codegen() override;
+};
+
+class VarExprAST : public ExprAST {
+  std::vector<std::pair<std::string, std::unique_ptr<ExprAST>>> VarNames;
+  std::unique_ptr<ExprAST> Body;
+
+public:
+  VarExprAST(
+      std::vector<std::pair<std::string, std::unique_ptr<ExprAST>>> VarNames,
+      std::unique_ptr<ExprAST> Body)
+      : VarNames(std::move(VarNames)), Body(std::move(Body)) {}
   llvm::Value *codegen() override;
 };
 

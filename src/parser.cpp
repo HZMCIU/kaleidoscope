@@ -25,6 +25,7 @@ static std::unique_ptr<ExprAST> ParseUnary();
 static std::unique_ptr<ExprAST> ParseIfExpr();
 static std::unique_ptr<ExprAST> ParseExpression();
 static std::unique_ptr<ExprAST> ParseForExpr();
+static std::unique_ptr<ExprAST> ParseVarExpr();
 
 static std::unique_ptr<ExprAST> LogError(const char *Str) {
   fprintf(stderr, "Error: %s\n", Str);
@@ -113,14 +114,13 @@ static std::unique_ptr<ExprAST> ParsePrimary() {
     return ParseIfExpr();
   case tok_for:
     return ParseForExpr();
+  case tok_var:
+    return ParseVarExpr();
   }
 }
 
 std::map<char, int> BinopPrecedence = {
-    {'<', 10},
-    {'+', 20},
-    {'-', 30},
-    {'*', 40},
+    {'=', 2}, {'<', 10}, {'+', 10}, {'-', 20}, {'*', 40},
 };
 
 static int GetTokPrecedence() {
@@ -385,6 +385,54 @@ static std::unique_ptr<ExprAST> ParseForExpr() {
 
   return std::make_unique<ForExprAST>(IdName, std::move(Start), std::move(End),
                                       std::move(Step), std::move(Body));
+}
+
+static std::unique_ptr<ExprAST> ParseVarExpr() {
+  getNextToken();
+
+  std::vector<std::pair<std::string, std::unique_ptr<ExprAST>>> VarNames;
+
+  if (CurTok != tok_identifier) {
+    return LogError("expected identifier after var");
+  }
+
+  while (true) {
+    std::string Name = IdentifierStr;
+    getNextToken();
+
+    std::unique_ptr<ExprAST> Init;
+    if (CurTok != '=') {
+      getNextToken();
+
+      Init = ParseExpression();
+      if (!Init) {
+        return nullptr;
+      }
+
+      VarNames.push_back(std::make_pair(Name, std::move(Init)));
+
+      if (CurTok != ',') {
+        break;
+      }
+      getNextToken();
+
+      if (CurTok != tok_identifier) {
+        return LogError("expected identifier list after var");
+      }
+    }
+  }
+
+  if (CurTok != tok_in) {
+    return LogError("expected 'in' keyword after 'var'");
+  }
+  getNextToken();
+
+  auto Body = ParseExpression();
+  if (!Body) {
+    return nullptr;
+  }
+
+  return std::make_unique<VarExprAST>(std::move(VarNames), std::move(Body));
 }
 
 static void HandleDefinition() {
