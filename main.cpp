@@ -1,9 +1,19 @@
 #include "KaleidoscopeJIT.h"
 #include "parser.h"
+#include <llvm/IR/LegacyPassManager.h>
 #include <llvm/IR/Module.h>
+#include <llvm/IR/PassManager.h>
+#include <llvm/MC/TargetRegistry.h>
+#include <llvm/Support/CodeGen.h>
 #include <llvm/Support/Error.h>
+#include <llvm/Support/FileSystem.h>
 #include <llvm/Support/TargetSelect.h>
+#include <llvm/Support/raw_ostream.h>
 #include <llvm/Target/TargetMachine.h>
+#include <llvm/Target/TargetOptions.h>
+#include <llvm/TargetParser/Host.h>
+#include <llvm/TargetParser/Triple.h>
+#include <system_error>
 
 #include <map>
 
@@ -27,7 +37,55 @@ int main(int argc, char *argv[]) {
 
   MainLoop();
 
-  TheModule->print(llvm::errs(), nullptr);
+  llvm::InitializeAllTargetInfos();
+  llvm::InitializeAllTargets();
+  llvm::InitializeAllTargetMCs();
+  llvm::InitializeAllAsmParsers();
+  llvm::InitializeAllAsmPrinters();
+
+  auto TargetTriple = llvm::sys::getDefaultTargetTriple();
+  TheModule->setTargetTriple(llvm::Triple(TargetTriple));
+
+  std::string Error;
+  auto Target =
+      llvm::TargetRegistry::lookupTarget(TheModule->getTargetTriple(), Error);
+
+  if (!Target) {
+    llvm::errs() << Error;
+    return 1;
+  }
+
+  auto CPU = "generic";
+  auto Features = "";
+
+  llvm::TargetOptions opt;
+  auto TheTargetMachine = Target->createTargetMachine(
+      llvm::Triple(TargetTriple), CPU, Features, opt, llvm::Reloc::PIC_);
+
+  TheModule->setDataLayout(
+      TheTargetMachine->getTargetTriple().computeDataLayout());
+
+  auto FileName = "output.o";
+  std::error_code EC;
+  llvm::raw_fd_ostream dest(FileName, EC, llvm::sys::fs::OF_None);
+
+  if (EC) {
+    llvm::errs() << "Could not open file: " << EC.message();
+    return 1;
+  }
+
+  llvm::legacy::PassManager pass;
+  auto FileType = llvm::CodeGenFileType::ObjectFile;
+
+  if (TheTargetMachine->addPassesToEmitFile(pass, dest, nullptr, FileType)) {
+    llvm::errs() << "The Target Machine can not emit a file of this type";
+  }
+
+  // TheModule->print(llvm::errs(), nullptr);
+  pass.run(*TheModule);
+  dest.flush();
+
+  llvm::outs() << "Wrote" << FileName << "\n";
 
   return 0;
 }
