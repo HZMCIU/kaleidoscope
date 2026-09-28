@@ -24,6 +24,22 @@ extern std::map<std::string, llvm::AllocaInst *> NamedValues;
 extern std::unique_ptr<llvm::orc::KaleidoscopeJIT> TheJIT;
 extern llvm::ExitOnError ExitOnErr;
 
+#ifdef _WIN32
+#define DLLEXPORT __declspec(dllexport)
+#else
+#define DLLEXPORT
+#endif
+
+extern "C" DLLEXPORT double putchard(double X) {
+  fputc((char)X, stderr);
+  return 0;
+}
+
+extern "C" DLLEXPORT double printd(double X) {
+  fprintf(stderr, "%f\n", X);
+  return 0;
+}
+
 int main(int argc, char *argv[]) {
   llvm::InitializeNativeTarget();
   llvm::InitializeNativeTargetAsmPrinter();
@@ -79,13 +95,14 @@ int main(int argc, char *argv[]) {
 
   if (TheTargetMachine->addPassesToEmitFile(pass, dest, nullptr, FileType)) {
     llvm::errs() << "The Target Machine can not emit a file of this type";
+    return 1;
   }
 
   // TheModule->print(llvm::errs(), nullptr);
   pass.run(*TheModule);
   dest.flush();
 
-  llvm::outs() << "Wrote" << FileName << "\n";
+  llvm::outs() << "Wrote " << FileName << "\n";
 
   return 0;
 }

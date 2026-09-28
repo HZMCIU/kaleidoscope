@@ -212,6 +212,10 @@ llvm::Function *FunctionAST::codegen() {
   }
 
   TheFunction->eraseFromParent();
+
+  if (P.isBinaryOp()) {
+    BinopPrecedence.erase(P.getOperatorName());
+  }
   return nullptr;
 }
 

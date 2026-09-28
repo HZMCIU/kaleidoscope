@@ -442,9 +442,9 @@ static void HandleDefinition() {
       FnIR->print(llvm::errs());
       fprintf(stderr, "\n");
 
-      ExitOnErr(TheJIT->addModule(llvm::orc::ThreadSafeModule(
-          std::move(TheModule), std::move(TheContext))));
-      InitializeModuleAndManagers();
+      // ExitOnErr(TheJIT->addModule(llvm::orc::ThreadSafeModule(
+      //     std::move(TheModule), std::move(TheContext))));
+      // InitializeModuleAndManagers();
     } else {
       getNextToken();
     }
