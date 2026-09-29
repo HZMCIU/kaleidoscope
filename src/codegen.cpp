@@ -2,12 +2,17 @@
 #include "llvm/IR/LLVMContext.h"
 #include <cassert>
 #include <llvm/ADT/APFloat.h>
+#include <llvm/ADT/StringRef.h>
 #include <llvm/Analysis/CGSCCPassManager.h>
 #include <llvm/IR/BasicBlock.h>
 #include <llvm/IR/Constants.h>
+#include <llvm/IR/DIBuilder.h>
+#include <llvm/IR/DebugInfoMetadata.h>
+#include <llvm/IR/DebugLoc.h>
 #include <llvm/IR/DerivedTypes.h>
 #include <llvm/IR/Function.h>
 #include <llvm/IR/Instructions.h>
+#include <llvm/IR/Metadata.h>
 #include <llvm/IR/Module.h>
 #include <llvm/IR/PassInstrumentation.h>
 #include <llvm/IR/PassManager.h>
@@ -22,6 +27,7 @@
 #include <llvm/Transforms/Scalar/Reassociate.h>
 #include <llvm/Transforms/Scalar/SimplifyCFG.h>
 #include <llvm/Transforms/Utils/Mem2Reg.h>
+#include <llvm/Transforms/Utils/ValueMapper.h>
 #include <vector>
 
 #include "KaleidoscopeJIT.h"
@@ -44,6 +50,52 @@ std::map<std::string, std::unique_ptr<PrototypeAST>> FunctionProtos;
 extern std::map<char, int> BinopPrecedence;
 
 llvm::Function *getFunction(std::string Name);
+
+DebugInfo KSDbgInfo;
+std::unique_ptr<llvm::DIBuilder> DBuilder;
+
+SourceLocation CurLoc;
+SourceLocation LexLoc = {1, 0};
+
+llvm::DIType *DebugInfo::getDoubleTy() {
+  if (DblTy) {
+    return DblTy;
+  }
+
+  DblTy = DBuilder->createBasicType("double", 64, llvm::dwarf::DW_ATE_float);
+
+  return DblTy;
+}
+
+void DebugInfo::emitLocation(ExprAST *AST) {
+  if (!AST) {
+    return Builder->SetCurrentDebugLocation(llvm::DebugLoc());
+  }
+
+  llvm::DIScope *Scope;
+  if (LexicalBlocks.empty()) {
+    Scope = TheCU;
+  } else {
+    Scope = LexicalBlocks.back();
+  }
+
+  Builder->SetCurrentDebugLocation(llvm::DILocation::get(
+      Scope->getContext(), AST->getLine(), AST->getCol(), Scope));
+}
+
+static int advance() {
+  int LastChar = getchar();
+
+  if (LastChar == '\n' || LastChar == '\r') {
+    LexLoc.Line++;
+    LexLoc.Col = 0;
+  } else {
+    LexLoc.Col++;
+  }
+
+  return LastChar;
+}
+
 static llvm::AllocaInst *CreateEntryBlockAlloca(llvm::Function *TheFunction,
                                                 llvm::StringRef VarName) {
   llvm::IRBuilder<> TmpB(&TheFunction->getEntryBlock(),
@@ -54,6 +106,7 @@ static llvm::AllocaInst *CreateEntryBlockAlloca(llvm::Function *TheFunction,
 }
 
 llvm::Value *NumberExprAST::codegen() {
+  KSDbgInfo.emitLocation(this);
   return llvm::ConstantFP::get(*TheContext, llvm::APFloat(Val));
 }
 
@@ -65,10 +118,14 @@ llvm::Value *VariableExprAST::codegen() {
     LogErrorV("Unknown variable name");
   }
 
+  KSDbgInfo.emitLocation(this);
+
   return Builder->CreateLoad(A->getAllocatedType(), A, Name.c_str());
 }
 
 llvm::Value *BinaryExprAST::codegen() {
+  KSDbgInfo.emitLocation(this);
+
   llvm::Value *L = LHS->codegen();
   llvm::Value *R = RHS->codegen();
 
@@ -135,6 +192,7 @@ llvm::Function *getFunction(std::string Name) {
 }
 
 llvm::Value *CallExprAST::codegen() {
+  KSDbgInfo.emitLocation(this);
   // llvm::Function *CalleeF = TheModule->getFunction(Callee);
   llvm::Function *CalleeF = getFunction(Callee);
   if (!CalleeF) {
@@ -175,6 +233,20 @@ llvm::Function *PrototypeAST::codegen() {
   return F;
 }
 
+static llvm::DISubroutineType *CreateFunctionType(unsigned NumArgs) {
+  llvm::SmallVector<llvm::Metadata *, 8> EltTyps;
+  llvm::DIType *DblTy = KSDbgInfo.getDoubleTy();
+
+  EltTyps.push_back(DblTy);
+
+  for (unsigned i = 0, e = NumArgs; i != e; i++) {
+    EltTyps.push_back(DblTy);
+  }
+
+  return DBuilder->createSubroutineType(
+      DBuilder->getOrCreateTypeArray(EltTyps));
+}
+
 llvm::Function *FunctionAST::codegen() {
   auto &P = *Proto;
   FunctionProtos[Proto->getName()] = std::move(Proto);
@@ -192,21 +264,48 @@ llvm::Function *FunctionAST::codegen() {
       llvm::BasicBlock::Create(*TheContext, "entry", TheFunction);
   Builder->SetInsertPoint(BB);
 
+  llvm::DIFile *Unit = DBuilder->createFile(KSDbgInfo.TheCU->getFilename(),
+                                            KSDbgInfo.TheCU->getDirectory());
+  llvm::DIScope *FContext = Unit;
+  unsigned LineNo = 0;
+  unsigned ScopeLine = 0;
+  llvm::DISubprogram *SP = DBuilder->createFunction(
+      FContext, P.getName(), llvm::StringRef(), Unit, LineNo,
+      CreateFunctionType(TheFunction->arg_size()), ScopeLine,
+      llvm::DINode::FlagPrototyped, llvm::DISubprogram::SPFlagDefinition);
+  TheFunction->setSubprogram(SP);
+  KSDbgInfo.LexicalBlocks.push_back(SP);
+  KSDbgInfo.emitLocation(nullptr);
+
   NamedValues.clear();
+  int ArgIdx = 0;
   for (auto &Arg : TheFunction->args()) {
     // NamedValues[std::string(Arg.getName())] = &Arg;
     llvm::AllocaInst *Alloca =
         CreateEntryBlockAlloca(TheFunction, Arg.getName());
+
+    llvm::DILocalVariable *D = DBuilder->createParameterVariable(
+        SP, Arg.getName(), ++ArgIdx, Unit, LineNo, KSDbgInfo.getDoubleTy());
+
+    DBuilder->insertDeclare(
+        Alloca, D, DBuilder->createExpression(),
+        llvm::DILocation::get(SP->getContext(), LineNo, 0, SP),
+        Builder->GetInsertBlock());
+
     Builder->CreateStore(&Arg, Alloca);
     NamedValues[std::string(Arg.getName())] = Alloca;
   }
 
+  KSDbgInfo.emitLocation(Body.get());
+
   if (llvm::Value *RetVal = Body->codegen()) {
     Builder->CreateRet(RetVal);
 
+    KSDbgInfo.LexicalBlocks.pop_back();
+
     llvm::verifyFunction(*TheFunction);
 
-    TheFPM->run(*TheFunction, *TheFAM);
+    // TheFPM->run(*TheFunction, *TheFAM);
 
     return TheFunction;
   }
@@ -216,10 +315,14 @@ llvm::Function *FunctionAST::codegen() {
   if (P.isBinaryOp()) {
     BinopPrecedence.erase(P.getOperatorName());
   }
+
+  KSDbgInfo.LexicalBlocks.pop_back();
+
   return nullptr;
 }
 
 llvm::Value *IfExprAST::codegen() {
+  KSDbgInfo.emitLocation(this);
   llvm::Value *ConV = Cond->codegen();
   if (!ConV) {
     return nullptr;
@@ -269,6 +372,8 @@ llvm::Value *ForExprAST::codegen() {
   llvm::Function *TheFunction = Builder->GetInsertBlock()->getParent();
 
   llvm::AllocaInst *Alloca = CreateEntryBlockAlloca(TheFunction, VarName);
+
+  KSDbgInfo.emitLocation(this);
 
   llvm::Value *StartVal = Start->codegen();
   if (!StartVal) {
@@ -348,6 +453,7 @@ llvm::Value *UnaryExprAST::codegen() {
     return LogErrorV("Unknow unary operator");
   }
 
+  KSDbgInfo.emitLocation(this);
   return Builder->CreateCall(F, OperandV, "unop");
 }
 
@@ -377,6 +483,8 @@ llvm::Value *VarExprAST::codegen() {
 
     NamedValues[VarName] = Alloca;
   }
+
+  KSDbgInfo.emitLocation(this);
 
   llvm::Value *BodyVal = Body->codegen();
   if (!BodyVal) {

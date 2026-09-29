@@ -1,5 +1,6 @@
 #include "KaleidoscopeJIT.h"
 #include "parser.h"
+#include <llvm/IR/DIBuilder.h>
 #include <llvm/IR/LegacyPassManager.h>
 #include <llvm/IR/Module.h>
 #include <llvm/IR/PassManager.h>
@@ -24,6 +25,9 @@ extern std::map<std::string, llvm::AllocaInst *> NamedValues;
 extern std::unique_ptr<llvm::orc::KaleidoscopeJIT> TheJIT;
 extern llvm::ExitOnError ExitOnErr;
 
+extern std::unique_ptr<llvm::DIBuilder> DBuilder;
+extern DebugInfo KSDbgInfo;
+
 #ifdef _WIN32
 #define DLLEXPORT __declspec(dllexport)
 #else
@@ -45,14 +49,23 @@ int main(int argc, char *argv[]) {
   llvm::InitializeNativeTargetAsmPrinter();
   llvm::InitializeNativeTargetAsmParser();
 
-  fprintf(stderr, "ready> ");
+  // fprintf(stderr, "ready> ");
   getNextToken();
 
   TheJIT = ExitOnErr(llvm::orc::KaleidoscopeJIT::Create());
   InitializeModuleAndManagers();
 
+  DBuilder = std::make_unique<llvm::DIBuilder>(*TheModule);
+  KSDbgInfo.TheCU = DBuilder->createCompileUnit(
+      llvm::dwarf::DW_LANG_C, DBuilder->createFile("fib.ks", "."),
+      "Kaleidoscope Compiler", false, "", 0);
+
   MainLoop();
 
+  return 0;
+}
+
+int outputObjectCode() {
   llvm::InitializeAllTargetInfos();
   llvm::InitializeAllTargets();
   llvm::InitializeAllTargetMCs();
@@ -103,6 +116,4 @@ int main(int argc, char *argv[]) {
   dest.flush();
 
   llvm::outs() << "Wrote " << FileName << "\n";
-
-  return 0;
 }

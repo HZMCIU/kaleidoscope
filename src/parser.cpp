@@ -66,10 +66,12 @@ static std::unique_ptr<ExprAST> ParseParenExpr() {
 static std::unique_ptr<ExprAST> ParseIdentifierExpr() {
   std::string IdName = IdentifierStr;
 
+  SourceLocation LitLoc = CurLoc;
+
   getNextToken();
 
   if (CurTok != '(') {
-    return std::make_unique<VariableExprAST>(IdName);
+    return std::make_unique<VariableExprAST>(LitLoc, IdName);
   }
 
   getNextToken();
@@ -96,7 +98,7 @@ static std::unique_ptr<ExprAST> ParseIdentifierExpr() {
 
   getNextToken();
 
-  return std::make_unique<CallExprAST>(IdName, std::move(Args));
+  return std::make_unique<CallExprAST>(LitLoc, IdName, std::move(Args));
 }
 
 static std::unique_ptr<ExprAST> ParsePrimary() {
@@ -144,6 +146,7 @@ static std::unique_ptr<ExprAST> ParseBinOpRHS(int ExprPrec,
     }
 
     int BinOp = CurTok;
+    SourceLocation BinLoc = CurLoc;
     getNextToken();
 
     // auto RHS = ParsePrimary();
@@ -160,8 +163,8 @@ static std::unique_ptr<ExprAST> ParseBinOpRHS(int ExprPrec,
       }
     }
 
-    LHS =
-        std::make_unique<BinaryExprAST>(BinOp, std::move(LHS), std::move(RHS));
+    LHS = std::make_unique<BinaryExprAST>(BinLoc, BinOp, std::move(LHS),
+                                          std::move(RHS));
   }
 }
 
@@ -176,6 +179,8 @@ static std::unique_ptr<ExprAST> ParseExpression() {
 
 static std::unique_ptr<PrototypeAST> ParsePrototype() {
   std::string FnName;
+
+  SourceLocation FnLoc = CurLoc;
 
   unsigned Kind = 0;
   unsigned BinaryPrecedence = 30;
@@ -234,8 +239,8 @@ static std::unique_ptr<PrototypeAST> ParsePrototype() {
     return LogErrorP("Invalid number of operands for operator");
   }
 
-  return std::make_unique<PrototypeAST>(FnName, std::move(ArgNames), Kind != 0,
-                                        BinaryPrecedence);
+  return std::make_unique<PrototypeAST>(FnLoc, FnName, std::move(ArgNames),
+                                        Kind != 0, BinaryPrecedence);
 
   // if (CurTok != tok_identifier) {
   //   return LogErrorP("Expected function name in prototype");
@@ -297,8 +302,9 @@ static std::unique_ptr<PrototypeAST> ParseExtern() {
 }
 
 static std::unique_ptr<FunctionAST> ParseTopLevelExpr() {
+  SourceLocation FnLoc = CurLoc;
   if (auto E = ParseExpression()) {
-    auto Proto = std::make_unique<PrototypeAST>("__anon_expr",
+    auto Proto = std::make_unique<PrototypeAST>(FnLoc, "__anon_expr",
                                                 std::vector<std::string>());
     return std::make_unique<FunctionAST>(std::move(Proto), std::move(E));
   }
@@ -307,6 +313,7 @@ static std::unique_ptr<FunctionAST> ParseTopLevelExpr() {
 }
 
 static std::unique_ptr<ExprAST> ParseIfExpr() {
+  SourceLocation IfLoc = CurLoc;
   getNextToken();
   auto Cond = ParseExpression();
   if (!Cond) {
@@ -331,7 +338,7 @@ static std::unique_ptr<ExprAST> ParseIfExpr() {
     return nullptr;
   }
 
-  return std::make_unique<IfExprAST>(std::move(Cond), std::move(Then),
+  return std::make_unique<IfExprAST>(IfLoc, std::move(Cond), std::move(Then),
                                      std::move(Else));
 }
 
@@ -473,24 +480,25 @@ static void HandleTopLevelExpression() {
     //   fprintf(stderr, "\n");
     //   FnIR->eraseFromParent();
     if (auto *FnIR = FnAST->codegen()) {
-
-      FnIR->print(llvm::errs());
-      fprintf(stderr, "\n");
-
-      auto RT = TheJIT->getMainJITDylib().createResourceTracker();
-
-      auto TSM = llvm::orc::ThreadSafeModule(std::move(TheModule),
-                                             std::move(TheContext));
-
-      ExitOnErr(TheJIT->addModule(std::move(TSM), RT));
-      InitializeModuleAndManagers();
-
-      auto ExprSymbol = ExitOnErr(TheJIT->lookup("__anon_expr"));
-
-      double (*FP)() = ExprSymbol.toPtr<double (*)()>();
-      fprintf(stderr, "Evaluated to %f\n", FP());
-
-      ExitOnErr(RT->remove());
+      //
+      // FnIR->print(llvm::errs());
+      // fprintf(stderr, "\n");
+      //
+      // auto RT = TheJIT->getMainJITDylib().createResourceTracker();
+      //
+      // auto TSM = llvm::orc::ThreadSafeModule(std::move(TheModule),
+      //                                        std::move(TheContext));
+      //
+      // ExitOnErr(TheJIT->addModule(std::move(TSM), RT));
+      // InitializeModuleAndManagers();
+      //
+      // auto ExprSymbol = ExitOnErr(TheJIT->lookup("__anon_expr"));
+      //
+      // double (*FP)() = ExprSymbol.toPtr<double (*)()>();
+      // fprintf(stderr, "Evaluated to %f\n", FP());
+      //
+      // ExitOnErr(RT->remove());
+      fprintf(stderr, "Error generating code for top level expr\n");
     } else {
       getNextToken();
     }
@@ -499,7 +507,7 @@ static void HandleTopLevelExpression() {
 
 void MainLoop() {
   while (true) {
-    fprintf(stderr, "ready> ");
+    // fprintf(stderr, "ready> ");
     switch (CurTok) {
     case tok_eof:
       return;
